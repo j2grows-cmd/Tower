@@ -1,442 +1,71 @@
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-
+const SAVE_KEY = 'tower-phase2-save-v1';
 const ui = {
-  coins: document.getElementById('coins'),
-  wave: document.getElementById('wave'),
-  enemies: document.getElementById('enemies'),
-  bestWave: document.getElementById('best-wave'),
-  hp: document.getElementById('tower-hp'),
-  level: document.getElementById('tower-level'),
-  healthFill: document.getElementById('tower-health-fill'),
-  waveState: document.getElementById('wave-state'),
-  progress: document.getElementById('wave-progress'),
-  message: document.getElementById('combat-message')
+  coins: document.getElementById('coins'), wave: document.getElementById('wave'), enemies: document.getElementById('enemies'),
+  bestWave: document.getElementById('best-wave'), hp: document.getElementById('tower-hp'), level: document.getElementById('tower-level'),
+  healthFill: document.getElementById('tower-health-fill'), waveState: document.getElementById('wave-state'), progress: document.getElementById('wave-progress'),
+  message: document.getElementById('combat-message'), shards: document.getElementById('shards'), runs: document.getElementById('runs'),
+  kills: document.getElementById('kills'), earned: document.getElementById('earned'), lifetimeWave: document.getElementById('lifetime-wave'),
+  offlineModal: document.getElementById('offline-modal'), offlineCopy: document.getElementById('offline-copy')
 };
-
-const state = {
-  coins: 0,
-  wave: 1,
-  bestWave: 0,
-  defeated: 0,
-  spawned: 0,
-  tower: { damage: 10, speed: 1, range: 210, maxHealth: 100, health: 100, level: 1 },
-  enemies: [],
-  bullets: [],
-  particles: [],
-  texts: [],
-  spawnTimer: 0,
-  shotTimer: 0,
-  waveDelay: 0,
-  gameOver: false,
-  lastTime: performance.now(),
-  messageTimer: 0
+const meta = {
+  power: { base: 3, growth: 2.15, effect: l => l * 2, text: l => `+${l * 2}% tower damage` },
+  income: { base: 5, growth: 1.9, effect: l => l * 5, text: l => `+${l * 5}% coins from enemies` },
+  vitality: { base: 6, growth: 1.95, effect: l => l * 4, text: l => `+${l * 4}% maximum tower health` },
+  starting: { base: 8, growth: 2, effect: l => l * 15, text: l => `Start each run with +${l * 15} coins` }
 };
-
 const upgradeConfig = {
-  damage: { base: 25, growth: 1.48, apply: () => { state.tower.damage += 2; } },
-  speed: { base: 30, growth: 1.52, apply: () => { state.tower.speed += 0.1; } },
-  range: { base: 35, growth: 1.5, apply: () => { state.tower.range += 15; } },
+  damage: { base: 25, growth: 1.48, apply: () => state.tower.damage += 2 },
+  speed: { base: 30, growth: 1.52, apply: () => state.tower.speed += .1 },
+  range: { base: 35, growth: 1.5, apply: () => state.tower.range += 15 },
   health: { base: 40, growth: 1.55, apply: () => { state.tower.maxHealth += 20; state.tower.health += 20; } }
 };
-
+const permanent = { shards: 0, levels: { power: 0, income: 0, vitality: 0, starting: 0 }, lifetime: { runs: 0, kills: 0, earned: 0, highestWave: 0 } };
 const upgradeLevels = { damage: 0, speed: 0, range: 0, health: 0 };
-
-function costFor(type) {
-  const c = upgradeConfig[type];
-  return Math.floor(c.base * Math.pow(c.growth, upgradeLevels[type]));
+const state = {
+  coins: 0, wave: 1, bestWave: 0, defeated: 0, spawned: 0,
+  tower: { damage: 10, speed: 1, range: 210, maxHealth: 100, health: 100, level: 1 },
+  enemies: [], bullets: [], particles: [], texts: [], spawnTimer: 0, shotTimer: 0, waveDelay: 0,
+  gameOver: false, lastTime: performance.now(), messageTimer: 0
+};
+const metaUi = {};
+for (const type of Object.keys(meta)) metaUi[type] = { level: document.getElementById(type+'-level'), desc: document.getElementById(type+'-desc'), cost: document.getElementById(type+'-cost') };
+function multiplier(type) { return 1 + meta[type].effect(permanent.levels[type]) / 100; }
+function metaCost(type) { const c=meta[type]; return Math.floor(c.base*Math.pow(c.growth,permanent.levels[type])); }
+function runCost(type) { const c=upgradeConfig[type]; return Math.floor(c.base*Math.pow(c.growth,upgradeLevels[type])); }
+function saveGame() { try { localStorage.setItem(SAVE_KEY, JSON.stringify({ permanent, lastSeen: Date.now() })); } catch (_) {} }
+function loadGame() {
+  let saved=null; try { saved=JSON.parse(localStorage.getItem(SAVE_KEY)||'null'); } catch (_) {}
+  if(saved?.permanent){ permanent.shards=saved.permanent.shards||0; permanent.levels={...permanent.levels,...(saved.permanent.levels||{})}; permanent.lifetime={...permanent.lifetime,...(saved.permanent.lifetime||{})}; }
+  const last=Number(saved?.lastSeen||0);
+  if(last && Date.now()-last>60000){ const hours=Math.min((Date.now()-last)/3600000,12); const reward=Math.floor(hours*(18+permanent.levels.income*3)); state.coins=reward+meta.starting.effect(permanent.levels.starting); ui.offlineCopy.textContent=`You were away for ${hours.toFixed(1)} hours. Your tower earned ${reward.toLocaleString()} coins while you were gone.`; ui.offlineModal.classList.remove('hidden'); }
+  else state.coins=meta.starting.effect(permanent.levels.starting);
+  state.tower.maxHealth=Math.round(100*multiplier('vitality')); state.tower.health=state.tower.maxHealth;
 }
-
-function resizeCanvas() {
-  const rect = canvas.getBoundingClientRect();
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  canvas.width = Math.max(1, Math.floor(rect.width * dpr));
-  canvas.height = Math.max(1, Math.floor(rect.height * dpr));
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-}
-
-window.addEventListener('resize', resizeCanvas);
-resizeCanvas();
-
-function towerPosition() {
-  const rect = canvas.getBoundingClientRect();
-  return { x: rect.width / 2, y: rect.height / 2 };
-}
-
-function randomEnemy() {
-  const p = towerPosition();
-  const angle = Math.random() * Math.PI * 2;
-  const radius = Math.max(canvas.clientWidth, canvas.clientHeight) * 0.58 + 20;
-  const hp = 24 + state.wave * 8;
-  return {
-    x: p.x + Math.cos(angle) * radius,
-    y: p.y + Math.sin(angle) * radius,
-    hp,
-    maxHp: hp,
-    speed: 25 + state.wave * 1.8 + Math.random() * 10,
-    radius: 9 + Math.min(5, state.wave * .12),
-    reward: 7 + Math.floor(state.wave * 1.5),
-    hue: Math.random() < .18 ? 205 : 164,
-    wobble: Math.random() * Math.PI * 2
-  };
-}
-
-function waveSize() {
-  return 4 + state.wave * 2;
-}
-
-function spawnEnemy() {
-  if (state.spawned >= waveSize()) return;
-  state.enemies.push(randomEnemy());
-  state.spawned += 1;
-}
-
-function startNextWave() {
-  state.wave += 1;
-  state.bestWave = Math.max(state.bestWave, state.wave);
-  state.defeated = 0;
-  state.spawned = 0;
-  state.spawnTimer = 0;
-  state.waveDelay = 0;
-  state.tower.health = Math.min(state.tower.maxHealth, state.tower.health + state.tower.maxHealth * .08);
-  setMessage(`Wave ${state.wave} incoming`);
-  burst(towerPosition().x, towerPosition().y, 18, '#7da7ff');
-}
-
-function setMessage(text, duration = 2) {
-  ui.message.textContent = text;
-  state.messageTimer = duration;
-}
-
-function acquireTarget() {
-  const p = towerPosition();
-  let target = null;
-  let bestDistance = Infinity;
-  for (const enemy of state.enemies) {
-    const d = Math.hypot(enemy.x - p.x, enemy.y - p.y);
-    if (d <= state.tower.range && d < bestDistance) {
-      bestDistance = d;
-      target = enemy;
-    }
-  }
-  return target;
-}
-
-function fire(target) {
-  const p = towerPosition();
-  state.bullets.push({ x: p.x, y: p.y, target, speed: 620, damage: state.tower.damage, life: 1.2 });
-  burst(p.x, p.y, 3, '#69e0c0');
-}
-
-function damageEnemy(enemy, damage) {
-  enemy.hp -= damage;
-  burst(enemy.x, enemy.y, 3, '#d8fff5');
-  if (enemy.hp <= 0) {
-    const reward = enemy.reward;
-    state.coins += reward;
-    state.defeated += 1;
-    state.enemies = state.enemies.filter(e => e !== enemy);
-    burst(enemy.x, enemy.y, 12, enemy.hue === 205 ? '#7da7ff' : '#69e0c0');
-    floatingText(`+${reward}`, enemy.x, enemy.y - 16, '#f4c95d');
-    setMessage(`Enemy destroyed  +${reward}`);
-  }
-}
-
-function hitTower(enemy) {
-  const damage = 7 + Math.floor(state.wave * 1.3);
-  state.tower.health -= damage;
-  burst(enemy.x, enemy.y, 12, '#ff6d7d');
-  floatingText(`-${damage}`, towerPosition().x, towerPosition().y - 42, '#ff6d7d');
-  setMessage('Tower under attack');
-  if (state.tower.health <= 0) {
-    state.tower.health = 0;
-    state.gameOver = true;
-    state.bestWave = Math.max(state.bestWave, state.wave);
-    burst(towerPosition().x, towerPosition().y, 60, '#ff6d7d');
-  }
-}
-
-function burst(x, y, count, color) {
-  for (let i = 0; i < count; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const s = 20 + Math.random() * 100;
-    state.particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: .25 + Math.random() * .45, max: .7, size: 1.5 + Math.random() * 3, color });
-  }
-}
-
-function floatingText(text, x, y, color) {
-  state.texts.push({ text, x, y, color, life: .8 });
-}
-
-function update(dt) {
-  if (state.gameOver) return;
-
-  if (state.messageTimer > 0) state.messageTimer -= dt;
-
-  const total = waveSize();
-  if (state.spawned < total) {
-    state.spawnTimer -= dt;
-    if (state.spawnTimer <= 0) {
-      spawnEnemy();
-      state.spawnTimer = Math.max(.24, .7 - state.wave * .012);
-    }
-  } else if (state.enemies.length === 0) {
-    state.waveDelay += dt;
-    if (state.waveDelay > 1.5) startNextWave();
-  }
-
-  state.shotTimer -= dt;
-  if (state.shotTimer <= 0) {
-    const target = acquireTarget();
-    if (target) {
-      fire(target);
-      state.shotTimer = 1 / state.tower.speed;
-    } else {
-      state.shotTimer = .05;
-    }
-  }
-
-  const p = towerPosition();
-  for (const enemy of [...state.enemies]) {
-    const dx = p.x - enemy.x;
-    const dy = p.y - enemy.y;
-    const distance = Math.hypot(dx, dy);
-    enemy.wobble += dt * 3;
-    if (distance <= 40) {
-      hitTower(enemy);
-      state.enemies = state.enemies.filter(e => e !== enemy);
-      continue;
-    }
-    enemy.x += (dx / distance) * enemy.speed * dt;
-    enemy.y += (dy / distance) * enemy.speed * dt;
-  }
-
-  for (const bullet of [...state.bullets]) {
-    bullet.life -= dt;
-    if (!state.enemies.includes(bullet.target)) {
-      state.bullets = state.bullets.filter(b => b !== bullet);
-      continue;
-    }
-    const dx = bullet.target.x - bullet.x;
-    const dy = bullet.target.y - bullet.y;
-    const d = Math.hypot(dx, dy);
-    if (d < 10 || bullet.life <= 0) {
-      if (bullet.life > 0) damageEnemy(bullet.target, bullet.damage);
-      state.bullets = state.bullets.filter(b => b !== bullet);
-    } else {
-      bullet.x += (dx / d) * bullet.speed * dt;
-      bullet.y += (dy / d) * bullet.speed * dt;
-    }
-  }
-
-  for (const particle of [...state.particles]) {
-    particle.life -= dt;
-    particle.x += particle.vx * dt;
-    particle.y += particle.vy * dt;
-    particle.vx *= .97;
-    particle.vy *= .97;
-    if (particle.life <= 0) state.particles = state.particles.filter(p => p !== particle);
-  }
-  for (const text of [...state.texts]) {
-    text.life -= dt;
-    text.y -= 24 * dt;
-    if (text.life <= 0) state.texts = state.texts.filter(t => t !== text);
-  }
-}
-
-function drawBackground(w, h) {
-  ctx.fillStyle = '#09111f';
-  ctx.fillRect(0, 0, w, h);
-  ctx.strokeStyle = 'rgba(88,116,150,.12)';
-  ctx.lineWidth = 1;
-  const gap = 36;
-  for (let x = 0; x < w; x += gap) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
-  for (let y = 0; y < h; y += gap) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
-}
-
-function drawRange(p) {
-  ctx.beginPath();
-  ctx.arc(p.x, p.y, state.tower.range, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(105,224,192,.025)';
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(105,224,192,.10)';
-  ctx.setLineDash([4, 8]);
-  ctx.stroke();
-  ctx.setLineDash([]);
-}
-
-function drawTower(p) {
-  ctx.save();
-  ctx.shadowColor = 'rgba(105,224,192,.25)';
-  ctx.shadowBlur = 28;
-  ctx.beginPath();
-  ctx.arc(p.x, p.y, 34, 0, Math.PI * 2);
-  ctx.fillStyle = '#12283a';
-  ctx.fill();
-  ctx.restore();
-  ctx.beginPath();
-  ctx.arc(p.x, p.y, 28, 0, Math.PI * 2);
-  ctx.fillStyle = '#172f42';
-  ctx.fill();
-  ctx.strokeStyle = '#69e0c0';
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.arc(p.x, p.y, 10, 0, Math.PI * 2);
-  ctx.fillStyle = '#69e0c0';
-  ctx.fill();
-  ctx.beginPath();
-  ctx.moveTo(p.x, p.y - 7); ctx.lineTo(p.x + 22, p.y); ctx.lineTo(p.x, p.y + 7); ctx.closePath();
-  ctx.fillStyle = '#d9fff5';
-  ctx.fill();
-}
-
-function drawEnemy(enemy) {
-  const wobble = Math.sin(enemy.wobble) * 1.2;
-  ctx.save();
-  ctx.translate(enemy.x, enemy.y + wobble);
-  ctx.shadowColor = enemy.hue === 205 ? 'rgba(125,167,255,.25)' : 'rgba(105,224,192,.2)';
-  ctx.shadowBlur = 12;
-  ctx.beginPath();
-  ctx.arc(0, 0, enemy.radius, 0, Math.PI * 2);
-  ctx.fillStyle = enemy.hue === 205 ? '#31548f' : '#2c7568';
-  ctx.fill();
-  ctx.strokeStyle = enemy.hue === 205 ? '#7da7ff' : '#69e0c0';
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-  ctx.restore();
-
-  const barW = enemy.radius * 2.4;
-  ctx.fillStyle = '#202a39';
-  ctx.fillRect(enemy.x - barW / 2, enemy.y - enemy.radius - 7, barW, 3);
-  ctx.fillStyle = '#ff7180';
-  ctx.fillRect(enemy.x - barW / 2, enemy.y - enemy.radius - 7, barW * Math.max(0, enemy.hp / enemy.maxHp), 3);
-}
-
-function draw() {
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  drawBackground(w, h);
-  const p = towerPosition();
-  drawRange(p);
-
-  for (const bullet of state.bullets) {
-    ctx.beginPath();
-    ctx.arc(bullet.x, bullet.y, 3, 0, Math.PI * 2);
-    ctx.fillStyle = '#d9fff5';
-    ctx.shadowColor = '#69e0c0';
-    ctx.shadowBlur = 12;
-    ctx.fill();
-    ctx.shadowBlur = 0;
-  }
-  for (const enemy of state.enemies) drawEnemy(enemy);
-  drawTower(p);
-
-  for (const particle of state.particles) {
-    ctx.globalAlpha = Math.max(0, particle.life / particle.max);
-    ctx.fillStyle = particle.color;
-    ctx.fillRect(particle.x, particle.y, particle.size, particle.size);
-  }
-  ctx.globalAlpha = 1;
-  for (const text of state.texts) {
-    ctx.globalAlpha = Math.max(0, text.life / .8);
-    ctx.fillStyle = text.color;
-    ctx.font = '800 11px system-ui';
-    ctx.textAlign = 'center';
-    ctx.fillText(text.text, text.x, text.y);
-  }
-  ctx.globalAlpha = 1;
-
-  if (state.gameOver) drawGameOver(w, h);
-}
-
-function drawGameOver(w, h) {
-  ctx.fillStyle = 'rgba(5,9,16,.72)';
-  ctx.fillRect(0, 0, w, h);
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#ff7b88';
-  ctx.font = '900 28px system-ui';
-  ctx.fillText('TOWER FALLEN', w / 2, h / 2 - 20);
-  ctx.fillStyle = '#b5c1d1';
-  ctx.font = '600 12px system-ui';
-  ctx.fillText(`Wave ${state.wave} reached  •  ${state.coins} coins earned`, w / 2, h / 2 + 10);
-  ctx.fillStyle = '#69e0c0';
-  ctx.font = '800 11px system-ui';
-  ctx.fillText('PRESS RESTART TO TRY AGAIN', w / 2, h / 2 + 40);
-}
-
-function updateUI() {
-  ui.coins.textContent = Math.floor(state.coins);
-  ui.wave.textContent = state.wave;
-  ui.enemies.textContent = state.enemies.length;
-  ui.bestWave.textContent = state.bestWave;
-  ui.hp.textContent = `${Math.ceil(state.tower.health)} / ${state.tower.maxHealth}`;
-  ui.level.textContent = `LV ${state.tower.level}`;
-  ui.healthFill.style.width = `${Math.max(0, state.tower.health / state.tower.maxHealth * 100)}%`;
-  ui.waveState.textContent = state.gameOver ? 'GAME OVER' : `WAVE ${state.wave}`;
-  ui.progress.textContent = state.enemies.length || state.spawned < waveSize()
-    ? `${state.defeated} / ${waveSize()} defeated`
-    : 'Wave cleared';
-
-  const values = {
-    damage: `${state.tower.damage} → ${state.tower.damage + 2}`,
-    speed: `${state.tower.speed.toFixed(1)} /s → ${(state.tower.speed + .1).toFixed(1)} /s`,
-    range: `${state.tower.range} → ${state.tower.range + 15}`,
-    health: `${state.tower.maxHealth} → ${state.tower.maxHealth + 20}`
-  };
-  for (const type of Object.keys(upgradeConfig)) {
-    document.getElementById(`${type}-value`).textContent = values[type];
-    document.getElementById(`${type}-cost`).textContent = costFor(type);
-    const button = document.querySelector(`[data-upgrade="${type}"]`);
-    button.disabled = state.gameOver || state.coins < costFor(type);
-  }
-}
-
-function buyUpgrade(type) {
-  if (state.gameOver) return;
-  const cost = costFor(type);
-  if (state.coins < cost) return;
-  state.coins -= cost;
-  upgradeConfig[type].apply();
-  upgradeLevels[type] += 1;
-  state.tower.level += 1;
-  setMessage(`${type[0].toUpperCase() + type.slice(1)} upgraded`);
-  burst(towerPosition().x, towerPosition().y, 10, '#69e0c0');
-  updateUI();
-}
-
-document.querySelectorAll('.upgrade').forEach(button => {
-  button.addEventListener('click', () => buyUpgrade(button.dataset.upgrade));
-});
-
-document.getElementById('reset').addEventListener('click', () => {
-  state.coins = 0;
-  state.wave = 1;
-  state.bestWave = 0;
-  state.defeated = 0;
-  state.spawned = 0;
-  state.enemies = [];
-  state.bullets = [];
-  state.particles = [];
-  state.texts = [];
-  state.spawnTimer = 0;
-  state.shotTimer = 0;
-  state.waveDelay = 0;
-  state.gameOver = false;
-  state.tower = { damage: 10, speed: 1, range: 210, maxHealth: 100, health: 100, level: 1 };
-  Object.keys(upgradeLevels).forEach(k => { upgradeLevels[k] = 0; });
-  setMessage('Systems online');
-  updateUI();
-});
-
-function loop(now) {
-  const dt = Math.min(.05, (now - state.lastTime) / 1000);
-  state.lastTime = now;
-  update(dt);
-  draw();
-  updateUI();
-  requestAnimationFrame(loop);
-}
-
-updateUI();
-requestAnimationFrame(loop);
+function resizeCanvas(){const r=canvas.getBoundingClientRect(),dpr=Math.min(devicePixelRatio||1,2);canvas.width=Math.max(1,Math.floor(r.width*dpr));canvas.height=Math.max(1,Math.floor(r.height*dpr));ctx.setTransform(dpr,0,0,dpr,0,0);}
+window.addEventListener('resize',resizeCanvas);resizeCanvas();
+function towerPosition(){return{x:canvas.clientWidth/2,y:canvas.clientHeight/2};}
+function waveSize(){return 5+state.wave*2;}
+function randomEnemy(){const p=towerPosition(),a=Math.random()*Math.PI*2,r=Math.max(canvas.clientWidth,canvas.clientHeight)*.58+20,hp=Math.floor((24+state.wave*8)*Math.pow(1.045,state.wave-1));return{x:p.x+Math.cos(a)*r,y:p.y+Math.sin(a)*r,hp,maxHp:hp,speed:25+state.wave*1.8+Math.random()*10,radius:9+Math.min(5,state.wave*.12),reward:Math.floor((7+state.wave*1.5)*multiplier('income')),hue:Math.random()<.18?205:164,wobble:Math.random()*7};}
+function spawnEnemy(){if(state.spawned<waveSize()){state.enemies.push(randomEnemy());state.spawned++;}}
+function message(t){ui.message.textContent=t;state.messageTimer=2;}
+function nextWave(){state.wave++;state.bestWave=Math.max(state.bestWave,state.wave);state.defeated=0;state.spawned=0;state.spawnTimer=0;state.waveDelay=0;state.tower.health=Math.min(state.tower.maxHealth,state.tower.health+state.tower.maxHealth*.08);message(`Wave ${state.wave} incoming`);burst(...Object.values(towerPosition()),18,'#7da7ff');}
+function target(){const p=towerPosition();let best=null,dBest=Infinity;for(const e of state.enemies){const d=Math.hypot(e.x-p.x,e.y-p.y);if(d<=state.tower.range&&d<dBest){dBest=d;best=e;}}return best;}
+function fire(e){const p=towerPosition();state.bullets.push({x:p.x,y:p.y,target:e,speed:620,damage:state.tower.damage*multiplier('power'),life:1.2});burst(p.x,p.y,3,'#69e0c0');}
+function killEnemy(e){const reward=e.reward;state.coins+=reward;permanent.lifetime.kills++;permanent.lifetime.earned+=reward;state.defeated++;state.enemies=state.enemies.filter(x=>x!==e);burst(e.x,e.y,12,e.hue===205?'#7da7ff':'#69e0c0');floatText(`+${reward}`,e.x,e.y-16,'#f4c95d');}
+function hitTower(e){const dmg=7+Math.floor(state.wave*1.3);state.tower.health-=dmg;burst(e.x,e.y,12,'#ff6d7d');floatText(`-${dmg}`,towerPosition().x,towerPosition().y-42,'#ff6d7d');message('Tower under attack');if(state.tower.health<=0){state.tower.health=0;state.gameOver=true;permanent.lifetime.highestWave=Math.max(permanent.lifetime.highestWave,state.wave);saveGame();burst(towerPosition().x,towerPosition().y,60,'#ff6d7d');}}
+function burst(x,y,n,color){for(let i=0;i<n;i++){const a=Math.random()*Math.PI*2,s=20+Math.random()*100;state.particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,life:.25+Math.random()*.45,max:.7,size:1.5+Math.random()*3,color});}}
+function floatText(text,x,y,color){state.texts.push({text,x,y,color,life:.8});}
+function update(dt){if(state.gameOver)return;if(state.messageTimer>0)state.messageTimer-=dt;const total=waveSize();if(state.spawned<total){state.spawnTimer-=dt;if(state.spawnTimer<=0){spawnEnemy();state.spawnTimer=Math.max(.24,.7-state.wave*.012);}}else if(!state.enemies.length){state.waveDelay+=dt;if(state.waveDelay>1.5)nextWave();}state.shotTimer-=dt;if(state.shotTimer<=0){const t=target();if(t){fire(t);state.shotTimer=1/state.tower.speed;}else state.shotTimer=.05;}const p=towerPosition();for(const e of [...state.enemies]){const dx=p.x-e.x,dy=p.y-e.y,d=Math.hypot(dx,dy);e.wobble+=dt*3;if(d<=40){hitTower(e);state.enemies=state.enemies.filter(x=>x!==e);continue;}e.x+=dx/d*e.speed*dt;e.y+=dy/d*e.speed*dt;}for(const b of [...state.bullets]){b.life-=dt;if(!state.enemies.includes(b.target)){state.bullets=state.bullets.filter(x=>x!==b);continue;}const dx=b.target.x-b.x,dy=b.target.y-b.y,d=Math.hypot(dx,dy);if(d<10||b.life<=0){if(b.life>0){b.target.hp-=b.damage;if(b.target.hp<=0)killEnemy(b.target);else burst(b.target.x,b.target.y,3,'#d8fff5');}state.bullets=state.bullets.filter(x=>x!==b);}else{b.x+=dx/d*b.speed*dt;b.y+=dy/d*b.speed*dt;}}for(const p of [...state.particles]){p.life-=dt;p.x+=p.vx*dt;p.y+=p.vy*dt;p.vx*=.97;p.vy*=.97;if(p.life<=0)state.particles=state.particles.filter(x=>x!==p);}for(const t of [...state.texts]){t.life-=dt;t.y-=24*dt;if(t.life<=0)state.texts=state.texts.filter(x=>x!==t);}}
+function drawBackground(w,h){ctx.fillStyle='#09111f';ctx.fillRect(0,0,w,h);ctx.strokeStyle='rgba(88,116,150,.12)';for(let x=0;x<w;x+=36){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke();}for(let y=0;y<h;y+=36){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke();}}
+function drawRange(p){ctx.beginPath();ctx.arc(p.x,p.y,state.tower.range,0,Math.PI*2);ctx.fillStyle='rgba(105,224,192,.025)';ctx.fill();ctx.strokeStyle='rgba(105,224,192,.10)';ctx.setLineDash([4,8]);ctx.stroke();ctx.setLineDash([]);}
+function drawTower(p){ctx.save();ctx.shadowColor='rgba(105,224,192,.25)';ctx.shadowBlur=28;ctx.beginPath();ctx.arc(p.x,p.y,34,0,Math.PI*2);ctx.fillStyle='#12283a';ctx.fill();ctx.restore();ctx.beginPath();ctx.arc(p.x,p.y,28,0,Math.PI*2);ctx.fillStyle='#172f42';ctx.fill();ctx.strokeStyle='#69e0c0';ctx.lineWidth=2;ctx.stroke();ctx.beginPath();ctx.arc(p.x,p.y,10,0,Math.PI*2);ctx.fillStyle='#69e0c0';ctx.fill();ctx.beginPath();ctx.moveTo(p.x,p.y-7);ctx.lineTo(p.x+22,p.y);ctx.lineTo(p.x,p.y+7);ctx.closePath();ctx.fillStyle='#d9fff5';ctx.fill();}
+function drawEnemy(e){ctx.save();ctx.translate(e.x,e.y+Math.sin(e.wobble)*1.2);ctx.shadowBlur=12;ctx.shadowColor=e.hue===205?'rgba(125,167,255,.25)':'rgba(105,224,192,.2)';ctx.beginPath();ctx.arc(0,0,e.radius,0,Math.PI*2);ctx.fillStyle=e.hue===205?'#31548f':'#2c7568';ctx.fill();ctx.strokeStyle=e.hue===205?'#7da7ff':'#69e0c0';ctx.stroke();ctx.restore();const bw=e.radius*2.4;ctx.fillStyle='#202a39';ctx.fillRect(e.x-bw/2,e.y-e.radius-7,bw,3);ctx.fillStyle='#ff7180';ctx.fillRect(e.x-bw/2,e.y-e.radius-7,bw*Math.max(0,e.hp/e.maxHp),3);}
+function draw(){const w=canvas.clientWidth,h=canvas.clientHeight;drawBackground(w,h);const p=towerPosition();drawRange(p);for(const b of state.bullets){ctx.beginPath();ctx.arc(b.x,b.y,3,0,Math.PI*2);ctx.fillStyle='#d9fff5';ctx.shadowColor='#69e0c0';ctx.shadowBlur=12;ctx.fill();ctx.shadowBlur=0;}for(const e of state.enemies)drawEnemy(e);drawTower(p);for(const q of state.particles){ctx.globalAlpha=Math.max(0,q.life/q.max);ctx.fillStyle=q.color;ctx.fillRect(q.x,q.y,q.size,q.size);}ctx.globalAlpha=1;for(const t of state.texts){ctx.globalAlpha=Math.max(0,t.life/.8);ctx.fillStyle=t.color;ctx.font='800 11px system-ui';ctx.textAlign='center';ctx.fillText(t.text,t.x,t.y);}ctx.globalAlpha=1;if(state.gameOver){ctx.fillStyle='rgba(5,9,16,.72)';ctx.fillRect(0,0,w,h);ctx.textAlign='center';ctx.fillStyle='#ff7b88';ctx.font='900 28px system-ui';ctx.fillText('TOWER FALLEN',w/2,h/2-20);ctx.fillStyle='#b5c1d1';ctx.font='600 12px system-ui';ctx.fillText(`Wave ${state.wave} reached  •  ${state.coins} coins earned`,w/2,h/2+10);ctx.fillStyle='#69e0c0';ctx.font='800 11px system-ui';ctx.fillText('PRESS RESTART TO TRY AGAIN',w/2,h/2+40);}}
+function updateUI(){ui.coins.textContent=Math.floor(state.coins).toLocaleString();ui.wave.textContent=state.wave;ui.enemies.textContent=state.enemies.length;ui.bestWave.textContent=state.bestWave;ui.hp.textContent=`${Math.ceil(state.tower.health)} / ${state.tower.maxHealth}`;ui.level.textContent=`LV ${state.tower.level}`;ui.healthFill.style.width=`${Math.max(0,state.tower.health/state.tower.maxHealth*100)}%`;ui.waveState.textContent=`WAVE ${state.wave}`;ui.progress.textContent=`${state.defeated} / ${waveSize()} defeated`;ui.shards.textContent=permanent.shards.toLocaleString();ui.runs.textContent=permanent.lifetime.runs.toLocaleString();ui.kills.textContent=permanent.lifetime.kills.toLocaleString();ui.earned.textContent=permanent.lifetime.earned.toLocaleString();ui.lifetimeWave.textContent=permanent.lifetime.highestWave;for(const type of Object.keys(upgradeConfig)){const c=runCost(type),b=document.querySelector(`[data-upgrade="${type}"]`);document.getElementById(type+'-cost').textContent=c.toLocaleString();b.disabled=state.gameOver||state.coins<c;document.getElementById(type+'-value').textContent={damage:`${state.tower.damage} → ${state.tower.damage+2}`,speed:`${state.tower.speed.toFixed(1)} /s → ${(state.tower.speed+.1).toFixed(1)} /s`,range:`${state.tower.range} → ${state.tower.range+15}`,health:`${state.tower.maxHealth} → ${state.tower.maxHealth+20}`}[type];}for(const type of Object.keys(meta)){const l=permanent.levels[type],c=metaCost(type);metaUi[type].level.textContent=`LV ${l}`;metaUi[type].desc.textContent=meta[type].text(l+1);metaUi[type].cost.textContent=c.toLocaleString();document.querySelector(`[data-meta="${type}"]`).disabled=permanent.shards<c;}}
+function buyRun(type){const c=runCost(type);if(state.gameOver||state.coins<c)return;state.coins-=c;upgradeLevels[type]++;upgradeConfig[type].apply();state.tower.level++;message(`${type[0].toUpperCase()+type.slice(1)} upgraded`);saveGame();}
+function buyMeta(type){const c=metaCost(type);if(permanent.shards<c)return;permanent.shards-=c;permanent.levels[type]++;message('Research complete');saveGame();updateUI();}
+function restart(){permanent.lifetime.runs++;permanent.lifetime.highestWave=Math.max(permanent.lifetime.highestWave,state.wave);permanent.shards+=Math.max(0,Math.floor(Math.max(0,state.bestWave-4)/3));state.coins=meta.starting.effect(permanent.levels.starting);state.wave=1;state.bestWave=0;state.defeated=0;state.spawned=0;state.enemies=[];state.bullets=[];state.particles=[];state.texts=[];state.spawnTimer=0;state.shotTimer=0;state.waveDelay=0;state.gameOver=false;state.tower={damage:10,speed:1,range:210,maxHealth:Math.round(100*multiplier('vitality')),health:Math.round(100*multiplier('vitality')),level:1};for(const k of Object.keys(upgradeLevels))upgradeLevels[k]=0;message('New run started');saveGame();updateUI();}
+for(const b of document.querySelectorAll('[data-upgrade]'))b.addEventListener('click',()=>buyRun(b.dataset.upgrade));for(const b of document.querySelectorAll('[data-meta]'))b.addEventListener('click',()=>buyMeta(b.dataset.meta));document.getElementById('reset').addEventListener('click',restart);document.getElementById('offline-close').addEventListener('click',()=>ui.offlineModal.classList.add('hidden'));
+loadGame();updateUI();setInterval(()=>{saveGame();updateUI();},5000);window.addEventListener('beforeunload',saveGame);function frame(now){const dt=Math.min((now-state.lastTime)/1000,.05);state.lastTime=now;update(dt);draw();updateUI();requestAnimationFrame(frame);}requestAnimationFrame(frame);
