@@ -4,21 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#080d18">
-  <meta name="description" content="Tower — an idle defense game prototype.">
+  <meta name="description" content="Tower — an idle defense game.">
   <title>Tower — Idle Defense</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <main class="app-shell">
     <header class="topbar">
-      <div>
-        <p class="eyebrow">IDLE DEFENSE</p>
-        <h1>TOWER</h1>
-      </div>
-      <div class="currency" aria-label="Coins">
-        <span class="coin-icon">◈</span>
-        <span id="coins">0</span>
-      </div>
+      <div><p class="eyebrow">IDLE DEFENSE</p><h1>TOWER</h1></div>
+      <div class="currency"><span class="coin-icon">◈</span><span id="coins">0</span></div>
     </header>
 
     <section class="status-grid" aria-label="Run status">
@@ -29,54 +23,43 @@
 
     <section class="battle-panel">
       <div class="battle-head">
-        <div>
-          <span class="label">TOWER CORE</span>
-          <div class="health-row"><strong id="tower-hp">100 / 100</strong><span id="tower-level">LV 1</span></div>
-        </div>
+        <div><span class="label">TOWER CORE</span><div class="health-row"><strong id="tower-hp">100 / 100</strong><span id="tower-level">LV 1</span></div></div>
         <div class="wave-state" id="wave-state">WAVE 1</div>
       </div>
       <div class="health-bar"><div id="tower-health-fill"></div></div>
       <canvas id="game" aria-label="Tower defense battlefield"></canvas>
-      <div class="battle-foot">
-        <span id="wave-progress">0 / 5 defeated</span>
-        <span id="combat-message">Systems online</span>
-      </div>
+      <div class="battle-foot"><span id="wave-progress">0 / 6 defeated</span><span id="combat-message">Systems online</span></div>
     </section>
 
     <section class="upgrade-panel">
-      <div class="section-heading">
-        <div>
-          <span class="label">UPGRADES</span>
-          <h2>Strengthen the tower</h2>
-        </div>
-        <button class="reset-button" id="reset" type="button">Restart</button>
-      </div>
+      <div class="section-heading"><div><span class="label">RUN UPGRADES</span><h2>Strengthen this run</h2></div><button class="reset-button" id="reset" type="button">Restart Run</button></div>
       <div class="upgrade-grid">
-        <button class="upgrade" data-upgrade="damage" type="button">
-          <span class="upgrade-icon">⚔</span>
-          <span class="upgrade-copy"><b>Damage</b><small id="damage-value">10 → 12</small></span>
-          <span class="cost"><span>◈</span><span id="damage-cost">25</span></span>
-        </button>
-        <button class="upgrade" data-upgrade="speed" type="button">
-          <span class="upgrade-icon">↯</span>
-          <span class="upgrade-copy"><b>Attack Speed</b><small id="speed-value">1.0 /s → 1.1 /s</small></span>
-          <span class="cost"><span>◈</span><span id="speed-cost">30</span></span>
-        </button>
-        <button class="upgrade" data-upgrade="range" type="button">
-          <span class="upgrade-icon">◎</span>
-          <span class="upgrade-copy"><b>Range</b><small id="range-value">210 → 225</small></span>
-          <span class="cost"><span>◈</span><span id="range-cost">35</span></span>
-        </button>
-        <button class="upgrade" data-upgrade="health" type="button">
-          <span class="upgrade-icon">✚</span>
-          <span class="upgrade-copy"><b>Max Health</b><small id="health-value">100 → 120</small></span>
-          <span class="cost"><span>◈</span><span id="health-cost">40</span></span>
-        </button>
+        <button class="upgrade" data-upgrade="damage" type="button"><span class="upgrade-icon">⚔</span><span class="upgrade-copy"><b>Damage</b><small id="damage-value"></small></span><span class="cost"><span>◈</span><span id="damage-cost"></span></span></button>
+        <button class="upgrade" data-upgrade="speed" type="button"><span class="upgrade-icon">↯</span><span class="upgrade-copy"><b>Attack Speed</b><small id="speed-value"></small></span><span class="cost"><span>◈</span><span id="speed-cost"></span></span></button>
+        <button class="upgrade" data-upgrade="range" type="button"><span class="upgrade-icon">◎</span><span class="upgrade-copy"><b>Range</b><small id="range-value"></small></span><span class="cost"><span>◈</span><span id="range-cost"></span></span></button>
+        <button class="upgrade" data-upgrade="health" type="button"><span class="upgrade-icon">✚</span><span class="upgrade-copy"><b>Max Health</b><small id="health-value"></small></span><span class="cost"><span>◈</span><span id="health-cost"></span></span></button>
       </div>
     </section>
 
-    <footer><span>PHASE 1 PROTOTYPE</span><span>AUTO-COMBAT ENABLED</span></footer>
+    <section class="meta-panel">
+      <div class="section-heading"><div><span class="label">PERMANENT PROGRESSION</span><h2>Research Lab</h2></div><div class="shards"><span>◆</span><strong id="shards">0</strong> Shards</div></div>
+      <p class="panel-note">Permanent upgrades survive every run. Earn Shards from your highest wave.</p>
+      <div class="upgrade-grid meta-grid">
+        <button class="upgrade meta-upgrade" data-meta="power" type="button"><span class="upgrade-icon">✦</span><span class="upgrade-copy"><b>Core Power <em id="power-level">LV 0</em></b><small id="power-desc"></small></span><span class="cost"><span>◆</span><span id="power-cost"></span></span></button>
+        <button class="upgrade meta-upgrade" data-meta="income" type="button"><span class="upgrade-icon">◈</span><span class="upgrade-copy"><b>Salvage <em id="income-level">LV 0</em></b><small id="income-desc"></small></span><span class="cost"><span>◆</span><span id="income-cost"></span></span></button>
+        <button class="upgrade meta-upgrade" data-meta="vitality" type="button"><span class="upgrade-icon">♥</span><span class="upgrade-copy"><b>Reinforced Core <em id="vitality-level">LV 0</em></b><small id="vitality-desc"></small></span><span class="cost"><span>◆</span><span id="vitality-cost"></span></span></button>
+        <button class="upgrade meta-upgrade" data-meta="starting" type="button"><span class="upgrade-icon">＋</span><span class="upgrade-copy"><b>Starting Funds <em id="starting-level">LV 0</em></b><small id="starting-desc"></small></span><span class="cost"><span>◆</span><span id="starting-cost"></span></span></button>
+      </div>
+    </section>
+
+    <section class="stats-panel">
+      <div class="section-heading"><div><span class="label">LIFETIME STATS</span><h2>Command Record</h2></div></div>
+      <div class="lifetime-grid"><div><span>RUNS</span><strong id="runs">0</strong></div><div><span>KILLS</span><strong id="kills">0</strong></div><div><span>COINS EARNED</span><strong id="earned">0</strong></div><div><span>HIGHEST WAVE</span><strong id="lifetime-wave">0</strong></div></div>
+    </section>
+
+    <footer><span>PHASE 2 • PERSISTENT PROGRESSION</span><span>AUTO-SAVE ENABLED</span></footer>
   </main>
+  <div class="modal-backdrop hidden" id="offline-modal"><div class="modal"><span class="label">WELCOME BACK</span><h2>Your tower kept working.</h2><p id="offline-copy"></p><button class="primary-button" id="offline-close" type="button">Collect Rewards</button></div></div>
   <script src="game.js"></script>
 </body>
 </html>
