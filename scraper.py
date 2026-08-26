@@ -4,17 +4,12 @@ from pathlib import Path
 from urllib.parse import urljoin
 
 import pandas as pd
-import requests
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 BASE_URL = "https://www.floraccess.com/en/search/"
 OUTPUT_DIR = Path("data")
 REQUEST_DELAY_SECONDS = 1.0
-MAX_PAGES = 1000
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; FlorAccessPublicCatalogueScraper/1.1; +https://github.com/j2grows-cmd/Tower)"
-}
+MAX_PAGES = 700
 
 
 def page_url(page: int) -> str:
@@ -45,104 +40,123 @@ def extract_dimensions(text: str) -> tuple[str | None, str | None]:
     return (measurements[0], None) if measurements else (None, None)
 
 
-def parse_product_anchor(link) -> dict | None:
-    href = link.get("href")
-    if not href:
-        return None
-    if "/product/" not in href.lower() and "/en/product" not in href.lower():
-        return None
+def parse_rendered_page(page, catalogue_page: int) -> list[dict]:
+    # FlorAccess renders the product catalogue client-side for ordinary HTTP
+    # requests. Playwright gives us the same rendered DOM a normal browser sees.
+    page.goto(page_url(catalogue_page), wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(2500)
 
-    name = clean_text(link.get_text(" ", strip=True))
-    if not name:
-        return None
+    body_text = clean_text(page.locator("body").inner_text()) or ""
+    euro_count = len(re.findall(r"€\s*[0-9]", body_text))
+    anchors = page.locator("a").count()
+    print(f"  diagnostic: {anchors} anchors, {euro_count} rendered EUR prices")
 
-    text = clean_text(link.get("aria-label")) or name
-    price = extract_price(text)
-    pot_size, height = extract_dimensions(text)
+    products: list[dict] = []
+    seen = set()
 
-    node = link
-    for _ in range(6):
-        node = getattr(node, "parent", None)
-        if node is None:
-            break
-        candidate_text = clean_text(node.get_text(" ", strip=True)) or ""
+    # Product cards are identified from their visible text. We don't rely on
+    # a fragile CSS class name because FlorAccess can change presentation markup.
+    for link in page.locator("a").all():
+        try:
+            text = clean_text(link.inner_text()) or ""
+            href = link.get_attribute("href") or ""
+        except Exception:
+            continue
+
+        price = extract_price(text)
         if price is None:
-            price = extract_price(candidate_text)
-        if pot_size is None:
-            pot_size, height2 = extract_dimensions(candidate_text)
-            if height is None:
-                height = height2
-        if price is not None and pot_size is not None:
-            break
+            continue
 
-    if price is None:
-        return None
+        # A product link generally contains the product name. If the anchor
+        # itself only contains an image, inspect its nearest useful ancestor.
+        name = clean_text(text)
+        if not name or name.startswith("€"):
+            continue
 
-    return {
-        "Plant": name,
-        "Price EUR": price,
-        "Pot Size": pot_size,
-        "Height": height,
-        "Product URL": urljoin(BASE_URL, href),
-    }
+        pot_size, height = extract_dimensions(text)
+        product_url = urljoin(BASE_URL, href) if href else ""
+        key = (name, price, pot_size, height, product_url)
+        if key in seen:
+            continue
+        seen.add(key)
 
+        products.append({
+            "Plant": name,
+            "Price EUR": price,
+            "Pot Size": pot_size,
+            "Height": height,
+            "Product URL": product_url,
+            "Catalogue Page": catalogue_page,
+        })
 
-def scrape_page(session: requests.Session, page: int) -> list[dict]:
-    response = session.get(page_url(page), headers=HEADERS, timeout=30)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    products = []
-    seen_urls = set()
-    for link in soup.find_all("a", href=True):
-        product = parse_product_anchor(link)
-        if product and product["Product URL"] not in seen_urls:
-            products.append(product)
-            seen_urls.add(product["Product URL"])
-
+    # Fallback: parse visible body lines when price and product text aren't in
+    # the same anchor. The public FlorAccess cards follow: name €price pot height.
     if not products:
-        anchors = len(soup.find_all("a", href=True))
-        euro_hits = len(soup.find_all(string=re.compile(r"€")))
-        print(f"  diagnostic: {anchors} anchors, {euro_hits} EUR text nodes")
+        pattern = re.compile(
+            r"(?P<name>.+?)\s+€\s*(?P<price>\d+(?:[.,]\d{1,2})?)\s+"
+            r"(?P<pot>\d+(?:\.\d+)?\s*cm)\s+(?P<height>\d+(?:\.\d+)?(?:[-–]\d+(?:\.\d+)?)?\s*cm)",
+            re.I,
+        )
+        for match in pattern.finditer(body_text):
+            products.append({
+                "Plant": clean_text(match.group("name")),
+                "Price EUR": float(match.group("price").replace(",", ".")),
+                "Pot Size": clean_text(match.group("pot")),
+                "Height": clean_text(match.group("height")),
+                "Product URL": "",
+                "Catalogue Page": catalogue_page,
+            })
 
     return products
 
 
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    session = requests.Session()
     all_rows: list[dict] = []
     empty_pages = 0
 
-    for page in range(1, MAX_PAGES + 1):
-        print(f"Scraping catalogue page {page}...")
-        try:
-            rows = scrape_page(session, page)
-        except requests.RequestException as exc:
-            print(f"Request failed on page {page}: {exc}")
-            continue
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        browser_context = browser.new_context(
+            user_agent="Mozilla/5.0 (compatible; FlorAccessPublicCatalogueScraper/2.0; +https://github.com/j2grows-cmd/Tower)",
+            viewport={"width": 1440, "height": 1000},
+        )
+        page = browser_context.new_page()
 
-        print(f"  found {len(rows)} products")
-        if not rows:
-            empty_pages += 1
-            if empty_pages >= 2:
-                break
-        else:
-            empty_pages = 0
-            for row in rows:
-                row["Catalogue Page"] = page
-            all_rows.extend(rows)
+        for catalogue_page in range(1, MAX_PAGES + 1):
+            print(f"Scraping catalogue page {catalogue_page}...")
+            try:
+                rows = parse_rendered_page(page, catalogue_page)
+            except PlaywrightTimeoutError as exc:
+                print(f"  browser timeout: {exc}")
+                rows = []
+            except Exception as exc:
+                print(f"  browser error: {exc}")
+                rows = []
 
-        time.sleep(REQUEST_DELAY_SECONDS)
+            print(f"  found {len(rows)} products")
+            if not rows:
+                empty_pages += 1
+                if empty_pages >= 2:
+                    break
+            else:
+                empty_pages = 0
+                all_rows.extend(rows)
+
+            time.sleep(REQUEST_DELAY_SECONDS)
+
+        browser.close()
 
     df = pd.DataFrame(all_rows)
     if df.empty:
         raise RuntimeError(
-            "No products were extracted. FlorAccess may be serving the catalogue through "
-            "a JavaScript/API layer to GitHub Actions, or the public page structure changed."
+            "No products were extracted from the rendered FlorAccess catalogue. "
+            "The site may be blocking automated browsers or its catalogue markup changed."
         )
 
-    df = df.drop_duplicates(subset=["Product URL"], keep="first")
+    # Keep distinct listings when pot/height/price differs. Exact duplicate rows
+    # from repeated DOM elements are removed.
+    df = df.drop_duplicates(subset=["Plant", "Price EUR", "Pot Size", "Height", "Product URL"])
     df = df.sort_values(["Plant", "Pot Size", "Height", "Price EUR"], na_position="last")
 
     csv_path = OUTPUT_DIR / "floraccess_catalogue.csv"
