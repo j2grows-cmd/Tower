@@ -1,21 +1,31 @@
-# Tower
+# FlorAccess Catalogue Scraper
 
-A browser-based idle tower-defense game inspired by the genre of incremental defense games.
+A public-catalogue scraper for FlorAccess. It does **not** log in or use a customer account. It reads publicly accessible FlorAccess catalogue pages and extracts plant name, wholesale price, pot size, height and product URL.
 
-## Phase 1
+## Features
 
-The first playable prototype includes:
+- Walks through the public catalogue pages.
+- Extracts product listings without authentication.
+- Preserves separate listings for different sizes/growers.
+- Writes `data/floraccess_catalogue.csv` and `data/floraccess_catalogue.xlsx`.
+- Runs locally or through GitHub Actions.
+- Weekly scheduled update plus manual workflow dispatch.
 
-- Central tower with automatic targeting and attacks
-- Enemy spawning and movement
-- Enemy health and tower damage
-- Wave progression
-- Coins from kills
-- Upgrade buttons for damage, attack speed, range and max health
-- Game-over and restart loop
-- Responsive desktop/mobile layout
-- No framework or build step — open `index.html` in a browser
+## Run locally
 
-## Run
+```bash
+python -m pip install -r requirements.txt
+python scraper.py
+```
 
-Open `index.html` locally or serve the repository with any static web server.
+The workbook is ignored by Git so it can be generated locally without bloating the repository. GitHub Actions uploads it as an artifact and commits the CSV.
+
+## GitHub Actions
+
+Open **Actions → Update FlorAccess Catalogue → Run workflow** for a manual run. The scheduled job runs weekly.
+
+## Important
+
+This project only accesses pages that are publicly available without logging in. It does not bypass authentication, CAPTCHAs, paywalls or other access controls. FlorAccess states that catalogue prices are excluding VAT and delivery costs.
+
+Use a reasonable request rate and respect FlorAccess's terms and robots.txt.
